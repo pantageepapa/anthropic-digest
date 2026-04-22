@@ -173,29 +173,29 @@ def fetch_article_text(url: str) -> str:
 # Summarisation with Claude
 # ---------------------------------------------------------------------------
 
-SUMMARISE_SYSTEM = (
-    "You are a sharp, opinionated technical writer crafting the summary section of a "
-    "blog-style weekly digest email. Write as if you're talking directly to a curious "
-    "engineer — conversational but substantive. "
-    "Structure your response as 2–3 short paragraphs: open with a hook that captures "
-    "what makes this piece interesting, then walk through the key technical idea or "
-    "finding (be specific — cite real numbers, techniques, or results from the article), "
-    "and close with a sentence on why it matters or what to watch next. "
-    "No bullet points, no headers, no markdown. Just clean readable prose that feels "
-    "like it was written by someone who actually read and enjoyed the article."
-)
+SUMMARISE_SYSTEM = """You are writing a mini blog post that summarises an Anthropic engineering article for a weekly email digest. The reader is a curious engineer who wants to understand the article well enough that they could explain it to a colleague — but they haven't read it yet.
+
+Your job is to re-tell the article's story in the same logical order it was written, broken into labelled sections. Use the article's own structure as your guide: if the article starts with a problem, you start with the problem; if it then introduces a solution, you cover that next; if it digs into results or a specific technique, you follow that thread too.
+
+Rules:
+- Write 4–6 sections. Each section gets a short, punchy heading (## like this) and 3–5 sentences of prose underneath.
+- The headings should feel like chapter titles, not topic labels — make them a little interesting, e.g. "The 93% Problem" not "Background".
+- Prose should be conversational and direct. Explain things clearly — use analogies if they help. Avoid jargon where plain English works just as well.
+- Be specific: cite actual numbers, names, and results from the article when they're there.
+- Keep momentum — each section should make the reader want to read the next one.
+- Output only the sections (## heading + prose). No intro line, no closing "in summary", no meta-commentary."""
 
 
 def summarise_article(client: anthropic.Anthropic, title: str, body: str) -> str:
-    """Call Claude to produce a blog-style summary of an article."""
+    """Call Claude to produce a structured, blog-style summary of an article."""
     if not body.strip():
         return ""
 
-    trimmed = body[:6000]
+    trimmed = body[:10000]
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=400,
+        max_tokens=900,
         system=[
             {
                 "type": "text",
@@ -214,159 +214,148 @@ def summarise_article(client: anthropic.Anthropic, title: str, body: str) -> str
 
 
 # ---------------------------------------------------------------------------
-# Email builders
+# Email builders  (one email per article)
 # ---------------------------------------------------------------------------
 
-def build_text_body(new_articles):
-    lines = [
-        "ANTHROPIC ENGINEERING DIGEST",
-        datetime.now().strftime("%A, %B %d, %Y"),
-        "=" * 60,
-        "",
-    ]
+def _summary_to_html(summary: str) -> str:
+    """Convert ## heading + prose markdown to email-safe HTML."""
+    html_parts = []
+    for block in summary.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        if block.startswith("## "):
+            heading = block[3:].strip()
+            html_parts.append(
+                f"<h2 style='margin:28px 0 6px;font-size:17px;font-weight:700;"
+                f"color:#1a1a1a;line-height:1.3;'>{heading}</h2>"
+            )
+        else:
+            # May be heading + paragraph joined by a single newline
+            lines = block.splitlines()
+            out_lines = []
+            for line in lines:
+                if line.startswith("## "):
+                    if out_lines:
+                        html_parts.append(
+                            f"<p style='margin:0 0 14px;font-size:15px;line-height:1.75;"
+                            f"color:#333;'>{' '.join(out_lines)}</p>"
+                        )
+                        out_lines = []
+                    html_parts.append(
+                        f"<h2 style='margin:28px 0 6px;font-size:17px;font-weight:700;"
+                        f"color:#1a1a1a;line-height:1.3;'>{line[3:].strip()}</h2>"
+                    )
+                else:
+                    out_lines.append(line)
+            if out_lines:
+                html_parts.append(
+                    f"<p style='margin:0 0 14px;font-size:15px;line-height:1.75;"
+                    f"color:#333;'>{' '.join(out_lines)}</p>"
+                )
+    return "\n".join(html_parts)
 
-    # Featured article
-    featured = new_articles[0]
-    lines.append("[ FEATURED ]")
-    lines.append(featured["title"])
-    if featured.get("date"):
-        lines.append(featured["date"])
-    lines.append("")
-    if featured.get("summary"):
-        lines.append(featured["summary"])
-    lines.append("")
-    lines.append(featured["url"])
 
-    # Rest
-    if len(new_articles) > 1:
-        lines += ["", "-" * 60, "ALSO NEW", ""]
-        for art in new_articles[1:]:
-            lines.append(f"* {art['title']}")
-            if art.get("date"):
-                lines.append(f"  {art['date']}")
-            if art.get("summary"):
-                lines.append(f"  {art['summary']}")
-            lines.append(f"  {art['url']}")
-            lines.append("")
-
-    lines += ["", "---", "View all: https://www.anthropic.com/engineering"]
+def _summary_to_text(summary: str) -> str:
+    """Strip ## markers for plain-text email."""
+    lines = []
+    for line in summary.splitlines():
+        if line.startswith("## "):
+            heading = line[3:].upper()
+            lines += ["", heading, "-" * len(heading)]
+        else:
+            lines.append(line)
     return "\n".join(lines)
 
 
-def _article_li(art: dict) -> str:
-    """Render a standard (non-featured) article list item."""
-    summary_text = art.get("summary") or art.get("description") or ""
-    summary_html = (
-        f"<p style='margin:8px 0 0;color:#444;font-size:14px;line-height:1.6;'>"
-        f"{summary_text}</p>"
-    ) if summary_text else ""
-    date_html = (
-        f"<span style='font-size:12px;color:#888;display:block;margin-top:4px;'>"
-        f"{art['date']}</span>"
-    ) if art.get("date") else ""
-    return f"""
-    <li style='margin-bottom:28px;list-style:none;padding-left:14px;border-left:3px solid #d97757;'>
-      <a href='{art["url"]}' style='font-size:16px;font-weight:600;color:#1a1a1a;text-decoration:none;'>
-        {art["title"]}
-      </a>
-      {date_html}
-      {summary_html}
-      <p style='margin:8px 0 0;'>
-        <a href='{art["url"]}' style='font-size:12px;color:#d97757;text-decoration:none;'>
-          Read article &rarr;
+def build_article_email(art: dict) -> tuple[str, str, str]:
+    """Return (subject, plain_text, html) for a single article email."""
+    title = art["title"]
+    date_label = art.get("date") or datetime.now().strftime("%B %d, %Y")
+    url = art["url"]
+    summary = art.get("summary") or art.get("description") or ""
+
+    subject = f"Anthropic Engineering: {title}"
+
+    # --- Plain text ---
+    text = "\n".join([
+        "ANTHROPIC ENGINEERING",
+        "=" * 60,
+        "",
+        title,
+        date_label,
+        "",
+        _summary_to_text(summary),
+        "",
+        "-" * 60,
+        f"Read the full article: {url}",
+        "View all: https://www.anthropic.com/engineering",
+    ])
+
+    # --- HTML ---
+    body_html = _summary_to_html(summary)
+    html = f"""<!DOCTYPE html>
+<html>
+<body style='font-family:Georgia,serif;max-width:620px;margin:0 auto;padding:40px 24px;background:#fff;color:#1a1a1a;'>
+  <table width='100%' cellpadding='0' cellspacing='0'>
+    <tr><td>
+
+      <!-- Header -->
+      <p style='margin:0 0 20px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+                color:#d97757;font-weight:700;font-family:system-ui,sans-serif;'>
+        Anthropic Engineering
+      </p>
+
+      <!-- Title -->
+      <h1 style='margin:0 0 8px;font-size:26px;line-height:1.25;font-weight:700;color:#1a1a1a;'>
+        <a href='{url}' style='color:#1a1a1a;text-decoration:none;'>{title}</a>
+      </h1>
+      <p style='margin:0 0 28px;font-size:13px;color:#999;font-family:system-ui,sans-serif;'>
+        {date_label}
+      </p>
+
+      <hr style='border:none;border-top:2px solid #1a1a1a;margin-bottom:28px;'>
+
+      <!-- Summary body -->
+      {body_html}
+
+      <!-- CTA -->
+      <div style='margin-top:36px;padding-top:24px;border-top:1px solid #eee;'>
+        <a href='{url}'
+           style='display:inline-block;padding:11px 22px;background:#d97757;color:#fff;
+                  font-size:14px;font-weight:600;text-decoration:none;border-radius:5px;
+                  font-family:system-ui,sans-serif;'>
+          Read the full article &rarr;
+        </a>
+      </div>
+
+      <!-- Footer -->
+      <p style='margin-top:32px;font-size:11px;color:#bbb;font-family:system-ui,sans-serif;'>
+        <a href='https://www.anthropic.com/engineering' style='color:#bbb;'>
+          anthropic.com/engineering
         </a>
       </p>
-    </li>"""
 
-
-def _featured_hero(art: dict) -> str:
-    """Render the top article as a large hero block."""
-    summary_text = art.get("summary") or art.get("description") or ""
-    # Split into paragraphs for the hero so it reads like a blog excerpt
-    paras = [p.strip() for p in summary_text.split("\n\n") if p.strip()]
-    paras_html = "".join(
-        f"<p style='margin:0 0 12px;font-size:15px;line-height:1.7;color:#333;'>{p}</p>"
-        for p in paras
-    ) if paras else (
-        f"<p style='margin:0 0 12px;font-size:15px;line-height:1.7;color:#333;'>{summary_text}</p>"
-        if summary_text else ""
-    )
-    date_html = (
-        f"<span style='font-size:12px;color:#888;'>{art['date']}</span>"
-    ) if art.get("date") else ""
-
-    return f"""
-    <div style='background:#fdf6f2;border-radius:8px;padding:24px 24px 20px;margin-bottom:32px;'>
-      <p style='margin:0 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#d97757;font-weight:700;'>
-        Featured
-      </p>
-      <h2 style='margin:0 0 6px;font-size:20px;line-height:1.3;'>
-        <a href='{art["url"]}' style='color:#1a1a1a;text-decoration:none;'>{art["title"]}</a>
-      </h2>
-      {date_html}
-      <div style='margin-top:14px;'>
-        {paras_html}
-      </div>
-      <a href='{art["url"]}' style='display:inline-block;margin-top:4px;font-size:13px;font-weight:600;color:#d97757;text-decoration:none;'>
-        Read article &rarr;
-      </a>
-    </div>"""
-
-
-def build_html_body(new_articles):
-    date_label = datetime.now().strftime("%A, %B %d, %Y")
-    count_label = f"{len(new_articles)} new article{'s' if len(new_articles) != 1 else ''}"
-
-    hero_html = _featured_hero(new_articles[0])
-
-    rest_html = ""
-    if len(new_articles) > 1:
-        items = "".join(_article_li(a) for a in new_articles[1:])
-        rest_html = f"""
-        <h3 style='font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:#888;margin:0 0 20px;'>
-          Also new
-        </h3>
-        <ul style='padding:0;margin:0;'>{items}</ul>"""
-
-    return f"""<!DOCTYPE html>
-<html>
-<body style='font-family:system-ui,-apple-system,sans-serif;max-width:640px;margin:0 auto;padding:32px 24px;background:#fff;color:#1a1a1a;'>
-  <table width='100%' cellpadding='0' cellspacing='0'>
-    <tr>
-      <td>
-        <p style='margin:0 0 2px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#d97757;font-weight:600;'>
-          Anthropic Engineering Digest
-        </p>
-        <p style='margin:0 0 24px;font-size:13px;color:#aaa;'>{date_label} &middot; {count_label}</p>
-        <hr style='border:none;border-top:1px solid #eee;margin-bottom:24px;'>
-        {hero_html}
-        {rest_html}
-        <hr style='border:none;border-top:1px solid #eee;margin-top:32px;margin-bottom:16px;'>
-        <p style='font-size:12px;color:#aaa;margin:0;'>
-          <a href='https://www.anthropic.com/engineering' style='color:#aaa;'>
-            View all articles on anthropic.com/engineering
-          </a>
-        </p>
-      </td>
-    </tr>
+    </td></tr>
   </table>
 </body>
 </html>"""
+
+    return subject, text, html
 
 
 # ---------------------------------------------------------------------------
 # Email sender
 # ---------------------------------------------------------------------------
 
-def send_email(config, subject, text_body, html_body):
+def send_email(config, subject: str, text_body: str, html_body: str):
     gmail_user = config["gmail"]["user"].strip()
     gmail_pass = config["gmail"]["app_password"].strip()
-    to_addr = gmail_user
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = f"Anthropic Digest <{gmail_user}>"
-    msg["To"] = to_addr
+    msg["From"] = f"Anthropic Engineering <{gmail_user}>"
+    msg["To"] = gmail_user
 
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
@@ -375,9 +364,9 @@ def send_email(config, subject, text_body, html_body):
         server.ehlo()
         server.starttls()
         server.login(gmail_user, gmail_pass)
-        server.sendmail(gmail_user, to_addr, msg.as_string())
+        server.sendmail(gmail_user, gmail_user, msg.as_string())
 
-    print(f"  Email sent to {to_addr}")
+    print(f"  Sent: {subject}")
 
 
 # ---------------------------------------------------------------------------
@@ -406,20 +395,13 @@ def main():
         save_seen(seen)
         return
 
-    print(f"Found {len(new_articles)} new article(s) — fetching content and summarising...")
+    print(f"Found {len(new_articles)} new article(s) — fetching and summarising each...")
     for art in new_articles:
-        print(f"  Summarising: {art['title']}")
+        print(f"  → {art['title']}")
         body = fetch_article_text(art["url"])
         art["summary"] = summarise_article(claude, art["title"], body)
-
-    subject = (
-        f"Anthropic Engineering: {len(new_articles)} new "
-        f"article{'s' if len(new_articles) != 1 else ''}"
-    )
-    text_body = build_text_body(new_articles)
-    html_body = build_html_body(new_articles)
-
-    send_email(config, subject, text_body, html_body)
+        subject, text_body, html_body = build_article_email(art)
+        send_email(config, subject, text_body, html_body)
 
     seen.update(a["url"] for a in articles)
     save_seen(seen)
