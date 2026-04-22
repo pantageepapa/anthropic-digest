@@ -159,9 +159,9 @@ def fetch_article_text(url: str) -> str:
     soup = BeautifulSoup(resp.text, "lxml")
     main = soup.find("main")
     if not main:
-        return soup.get_text(" ", strip=True)[:8000]
+        return soup.get_text(" ", strip=True)
 
-    # The article body lives in the second .page-wrapper div inside <main>
+    # The article body lives in the .page-wrapper div inside <main>
     body_divs = main.find_all("div", class_="page-wrapper", recursive=False)
     if body_divs:
         return body_divs[0].get_text(" ", strip=True)
@@ -173,29 +173,29 @@ def fetch_article_text(url: str) -> str:
 # Summarisation with Claude
 # ---------------------------------------------------------------------------
 
-SUMMARISE_SYSTEM = """You are writing a mini blog post that summarises an Anthropic engineering article for a weekly email digest. The reader is a curious engineer who wants to understand the article well enough that they could explain it to a colleague — but they haven't read it yet.
+SUMMARISE_SYSTEM = """You are writing a self-contained summary of an Anthropic engineering blog post for a weekly digest email. The goal is simple: after reading your summary, the reader should know everything the article covers — well enough that they don't need to open it unless they want to go deeper.
 
-Your job is to re-tell the article's story in the same logical order it was written, broken into labelled sections. Use the article's own structure as your guide: if the article starts with a problem, you start with the problem; if it then introduces a solution, you cover that next; if it digs into results or a specific technique, you follow that thread too.
+This is NOT a teaser or a highlights reel. Cover the full article, in order. Every major point, result, design decision, and finding should appear in your summary. If the article has five distinct ideas, your summary has five distinct ideas.
 
-Rules:
-- Write 4–6 sections. Each section gets a short, punchy heading (## like this) and 3–5 sentences of prose underneath.
-- The headings should feel like chapter titles, not topic labels — make them a little interesting, e.g. "The 93% Problem" not "Background".
-- Prose should be conversational and direct. Explain things clearly — use analogies if they help. Avoid jargon where plain English works just as well.
-- Be specific: cite actual numbers, names, and results from the article when they're there.
-- Keep momentum — each section should make the reader want to read the next one.
-- Output only the sections (## heading + prose). No intro line, no closing "in summary", no meta-commentary."""
+Format:
+- Write 4–7 sections. Each gets a ## heading and 3–5 sentences of prose.
+- Headings should be descriptive and a little interesting — "The 93% Problem" beats "Background".
+- Follow the article's own structure and order. Don't rearrange or skip sections.
+- Write conversationally. Explain technical concepts in plain terms; use analogies where helpful.
+- Be specific: include real numbers, names, system names, and results from the article.
+- Target around 600 words total — readable in under 3 minutes.
+- Output only the ## sections. No intro sentence, no "In summary", no meta-commentary."""
 
 
 def summarise_article(client: anthropic.Anthropic, title: str, body: str) -> str:
-    """Call Claude to produce a structured, blog-style summary of an article."""
+    """Call Claude to produce a complete, structured summary of an article."""
     if not body.strip():
         return ""
 
-    trimmed = body[:10000]
-
+    # Pass the full article — Sonnet handles long context well
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=900,
+        max_tokens=1200,
         system=[
             {
                 "type": "text",
@@ -206,7 +206,7 @@ def summarise_article(client: anthropic.Anthropic, title: str, body: str) -> str
         messages=[
             {
                 "role": "user",
-                "content": f'Article title: "{title}"\n\nArticle text:\n{trimmed}',
+                "content": f'Article title: "{title}"\n\nArticle text:\n{body}',
             }
         ],
     )
