@@ -1,0 +1,40 @@
+name: Anthropic Engineering Digest
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # every Monday at 8:00 AM UTC
+  workflow_dispatch:        # allow manual trigger from the Actions tab
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # needed to commit seen_articles.json back
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python anthropic_digest.py
+
+      - name: Save seen articles back to repo
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_articles.json
+          git diff --cached --quiet || git commit -m "chore: update seen articles [skip ci]"
+          git push
